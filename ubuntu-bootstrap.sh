@@ -574,7 +574,7 @@ stage_ssh() {
     "Ключевой вход, запрет root по паролю, ограничение пользователей. С авто-откатом." || return 0
 
   local sshd_dir="/etc/ssh/sshd_config.d"
-  local conf="${sshd_dir}/00-bootstrap-hardening.conf"
+  local conf="${sshd_dir}/99-bootstrap-hardening.conf"
   [[ -d "$sshd_dir" ]] || { err "Нет ${sshd_dir} — слишком старая Ubuntu?"; return 1; }
 
   # --- проверка: у кого-то ДОЛЖЕН быть рабочий ключ, иначе запрет паролей = потеря доступа ---
@@ -881,7 +881,7 @@ stage_limits() {
 
   if ask_yn "Поднять nofile до 65535 для системных сервисов и пользователей?" y; then
     # Лимиты для интерактивных сессий (PAM).
-    write_file /etc/security/limits.d/00-bootstrap.conf 0644 root:root <<'EOF'
+    write_file /etc/security/limits.d/99-bootstrap.conf 0644 root:root <<'EOF'
 *    soft nofile 65535
 *    hard nofile 65535
 root soft nofile 65535
