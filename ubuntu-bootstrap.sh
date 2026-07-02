@@ -574,7 +574,7 @@ stage_ssh() {
     "Ключевой вход, запрет root по паролю, ограничение пользователей. С авто-откатом." || return 0
 
   local sshd_dir="/etc/ssh/sshd_config.d"
-  local conf="${sshd_dir}/99-bootstrap-hardening.conf"
+  local conf="${sshd_dir}/00-bootstrap-hardening.conf"
   [[ -d "$sshd_dir" ]] || { err "Нет ${sshd_dir} — слишком старая Ubuntu?"; return 1; }
 
   # --- проверка: у кого-то ДОЛЖЕН быть рабочий ключ, иначе запрет паролей = потеря доступа ---
@@ -643,10 +643,12 @@ stage_ssh() {
   # --- показать и применить конфиг ---
   local plan
   plan="Port ${new_port}
+PubkeyAuthentication yes
+AuthenticationMethods publickey
 PasswordAuthentication no
 KbdInteractiveAuthentication no
+PermitEmptyPasswords no
 PermitRootLogin ${permit_root}
-PubkeyAuthentication yes
 MaxAuthTries 4
 LoginGraceTime 30
 X11Forwarding no
@@ -879,7 +881,7 @@ stage_limits() {
 
   if ask_yn "Поднять nofile до 65535 для системных сервисов и пользователей?" y; then
     # Лимиты для интерактивных сессий (PAM).
-    write_file /etc/security/limits.d/99-bootstrap.conf 0644 root:root <<'EOF'
+    write_file /etc/security/limits.d/00-bootstrap.conf 0644 root:root <<'EOF'
 *    soft nofile 65535
 *    hard nofile 65535
 root soft nofile 65535
@@ -898,7 +900,7 @@ EOF
   fi
 
   if ask_yn "Применить минимальный сетевой sysctl hardening (по CIS L1)?" y; then
-    write_file /etc/sysctl.d/99-bootstrap-hardening.conf 0644 root:root <<'EOF'
+    write_file /etc/sysctl.d/00-bootstrap-hardening.conf 0644 root:root <<'EOF'
 # Минимальный сетевой hardening (CIS Ubuntu Benchmark, уровень 1)
 net.ipv4.tcp_syncookies = 1
 net.ipv4.conf.all.rp_filter = 1
