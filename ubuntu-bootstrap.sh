@@ -574,7 +574,7 @@ stage_ssh() {
     "Ключевой вход, запрет root по паролю, ограничение пользователей. С авто-откатом." || return 0
 
   local sshd_dir="/etc/ssh/sshd_config.d"
-  local conf="${sshd_dir}/99-bootstrap-hardening.conf"
+  local conf="${sshd_dir}/00-bootstrap-hardening.conf"
   [[ -d "$sshd_dir" ]] || { err "Нет ${sshd_dir} — слишком старая Ubuntu?"; return 1; }
 
   # --- проверка: у кого-то ДОЛЖЕН быть рабочий ключ, иначе запрет паролей = потеря доступа ---
@@ -900,7 +900,7 @@ EOF
   fi
 
   if ask_yn "Применить минимальный сетевой sysctl hardening (по CIS L1)?" y; then
-    write_file /etc/sysctl.d/00-bootstrap-hardening.conf 0644 root:root <<'EOF'
+    write_file /etc/sysctl.d/99-bootstrap-hardening.conf 0644 root:root <<'EOF'
 # Минимальный сетевой hardening (CIS Ubuntu Benchmark, уровень 1)
 net.ipv4.tcp_syncookies = 1
 net.ipv4.conf.all.rp_filter = 1
@@ -935,25 +935,63 @@ stage_security() {
 
   # --- unattended-upgrades ---
   echo "  unattended-upgrades: автоматическая установка security-обновлений Ubuntu."
-  echo "  Плюс: закрывает CVE без вашего участия. Минус: редкие ночные рестарты сервисов."
-  if ask_yn "Включить автоматические security-обновления?" y; then
+  echo "  Режим: не чаще 1 раза в неделю, окно — воскресенье 04:00 по Москве."
+  echo "  Важно: если сервер выключен в это время, задача НЕ запустится позже днём."
+
+  if ask_yn "Включить автоматические security-обновления раз в неделю в 04:00 по Москве?" y; then
     apt_install unattended-upgrades || return 1
+
     write_file /etc/apt/apt.conf.d/20auto-upgrades 0644 root:root <<'EOF'
-APT::Periodic::Update-Package-Lists "1";
-APT::Periodic::Unattended-Upgrade "1";
+APT::Periodic::Update-Package-Lists "7";
+APT::Periodic::Unattended-Upgrade "7";
 APT::Periodic::AutocleanInterval "7";
 EOF
-    ok "unattended-upgrades включён (только security-канал по умолчанию Ubuntu)."
-    info "Проверка: sudo unattended-upgrade --dry-run --debug"
+
+    run mkdir -p /etc/systemd/system/apt-daily.timer.d
+    write_file /etc/systemd/system/apt-daily.timer.d/override.conf 0644 root:root <<'EOF'
+[Timer]
+OnCalendar=
+OnCalendar=Sun *-*-* 04:00:00 Europe/Moscow
+RandomizedDelaySec=0
+Persistent=false
+EOF
+
+    run mkdir -p /etc/systemd/system/apt-daily-upgrade.timer.d
+    write_file /etc/systemd/system/apt-daily-upgrade.timer.d/override.conf 0644 root:root <<'EOF'
+[Timer]
+OnCalendar=
+OnCalendar=Sun *-*-* 04:15:00 Europe/Moscow
+RandomizedDelaySec=0
+Persistent=false
+EOF
+
+    run systemctl daemon-reload
+    run systemctl restart apt-daily.timer
+    run systemctl restart apt-daily-upgrade.timer
+
+    ok "unattended-upgrades включён: security updates не чаще 1 раза в неделю."
+    ok "Расписание: apt update — воскресенье 04:00 Europe/Moscow, upgrade — воскресенье 04:15 Europe/Moscow."
+
+    info "Проверка расписания:"
+    if (( ! DRY_RUN )); then
+      systemctl list-timers 'apt-daily*' --no-pager | sed 's/^/    /'
+    else
+      info "[dry-run] systemctl list-timers 'apt-daily*'"
+    fi
+
+    info "Проверка вручную: sudo unattended-upgrade --dry-run --debug"
   fi
 
   # --- fail2ban ---
   echo
   echo "  fail2ban: банит IP после N неудачных SSH-входов."
   echo "  Плюс: режет brute force. Минус: можно забанить себя при опечатках в пароле/ключе."
+
   if ask_yn "Установить и настроить fail2ban для SSH?" y; then
     apt_install fail2ban || return 1
+
     local cur_ssh="${SSH_PORT_TARGET:-$SSH_PORT_CURRENT}"
+
     # backend=systemd обязателен на Ubuntu 24.04+: auth.log может отсутствовать.
     write_file /etc/fail2ban/jail.d/sshd.local 0644 root:root <<EOF
 [sshd]
@@ -964,23 +1002,37 @@ maxretry = 5
 findtime = 10m
 bantime = 1h
 EOF
+
+    if (( ! DRY_RUN )); then
+      fail2ban-client -t >>"$LOG_FILE" 2>&1 || {
+        err "Конфиг fail2ban невалиден — сервис не запускаю."
+        return 1
+      }
+    else
+      info "[dry-run] fail2ban-client -t"
+    fi
+
     run systemctl enable --now fail2ban
+
     if (( ! DRY_RUN )); then
       sleep 2
       fail2ban-client status sshd >>"$LOG_FILE" 2>&1 \
         && ok "fail2ban активен (jail: sshd, порт ${cur_ssh})." \
         || warn "fail2ban запущен, но jail sshd не поднялся — проверьте: fail2ban-client status"
     fi
+
     info "Откат: systemctl disable --now fail2ban; разбан: fail2ban-client unban <IP>"
   fi
 
   # --- быстрый аудит опасных прав ---
   if ask_yn "Проверить опасные права на файлы (world-readable секреты, .env)?" y; then
     info "Ищу world-readable .env/дампы в типовых местах (до 10 результатов):"
+
     local found
     found="$(find /root /home /opt /srv -maxdepth 4 \
              \( -name '*.env' -o -name '.env*' -o -name '*.sql' -o -name '*.dump' \) \
              -perm -o+r 2>/dev/null | head -10 || true)"
+
     if [[ -n "$found" ]]; then
       warn "Найдены файлы, доступные всем на чтение:"
       printf '    %s\n' "$found"
@@ -989,6 +1041,7 @@ EOF
       ok "Опасных world-readable секретов не найдено."
     fi
   fi
+
   record_done "Базовая защита"
 }
 
@@ -1786,7 +1839,7 @@ EOF
 
 # Порядок этапов важен: пользователь -> SSH -> firewall (знает SSH-порт) ->
 # базовая система -> веб -> docker -> доступы -> приложение -> отчёт.
-readonly STAGE_ORDER=(preflight packages users ssh firewall swap limits security nginx certbot docker git registry django report)
+readonly STAGE_ORDER=(preflight packages users ssh swap limits security nginx certbot docker git registry django firewall report)
 declare -rA STAGE_FN=(
   [preflight]=stage_preflight [packages]=stage_packages [users]=stage_users
   [ssh]=stage_ssh [firewall]=stage_firewall [swap]=stage_swap
