@@ -1,0 +1,11 @@
+#cloud-config
+# Install and configure non-interactively on first boot. The admin key is the one cloud-init already installed.
+runcmd:
+  - curl -fsSL https://raw.githubusercontent.com/Ange1oc/devops_template/main/ubuntu/bootstrap/install.sh | bash -s -- --ref main
+  - >
+    ubuntu-bootstrap apply --profile minimal
+    --set ADMIN_USER=deploy
+    --set 'ADMIN_SSH_KEYS=ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleExampleExampleExampleExampleExampleExam admin@laptop'
+    --set ADMIN_SUDO_MODE=nopasswd
+    --set SSH_CONFIRM=auto
+    --yes

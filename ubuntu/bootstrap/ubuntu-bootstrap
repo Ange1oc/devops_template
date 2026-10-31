@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+#
+# ubuntu-bootstrap: modular production setup for Ubuntu servers.
+# Commands live in commands/<name>.sh, modules in modules/<name>.sh (contract in lib/modules.sh);
+# a new file is picked up automatically, no registration needed.
+
+set -Eeuo pipefail
+# `render | file_write` must run file_write in the current shell so FILE_CHANGED is visible.
+shopt -s lastpipe
+umask 022
+
+if [[ -n ${LC_ALL-} ]]; then
+    export LC_CTYPE=$LC_ALL
+    unset LC_ALL
+fi
+export LC_COLLATE=C LC_NUMERIC=C
+PATH="$PATH:/usr/sbin:/sbin:/snap/bin"
+
+((BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4))) || { echo 'нужен bash 4.4+' >&2; exit 1; }
+
+UBB_HOME="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+readonly UBB_HOME
+
+for lib in core validate paths facts pkg svc tx options modules ui audit runner; do
+    # shellcheck source=/dev/null
+    source "$UBB_HOME/lib/$lib.sh"
+done
+unset lib
+
+OPT_YES=0 OPT_QUIET=0 OPT_VERBOSE=0 OPT_COLOR=1 OPT_FORCE=0 OPT_JSON=0 OPT_KEEP_GOING=0 OPT_FORCE_REAPPLY=0
+OPT_PROFILE='' OPT_CONFIG_FILE=''
+declare -a OPT_ONLY=() OPT_SKIP=() CMD_ARGS=()
+
+trap on_exit EXIT
+trap 'exit 130' INT TERM
+trap ui_on_hangup HUP
+# Unexpected failure in the main process; a deliberate `return N` is not a failure.
+on_err() {
+    [[ $BASHPID == "$$" && $BASH_COMMAND != return* ]] || return 0
+    log_error "сбой: \"$BASH_COMMAND\" (${BASH_SOURCE[1]##*/}:${BASH_LINENO[0]})"
+}
+trap on_err ERR
+
+parse_global_args() {
+    local words=0
+    while (($#)); do
+        case $1 in
+            -y | --yes) OPT_YES=1; shift ;;
+            -n | --dry-run) DRY_RUN=1; shift ;;
+            -q | --quiet) OPT_QUIET=1; shift ;;
+            -v | --verbose) OPT_VERBOSE=1; shift ;;
+            --no-color) OPT_COLOR=0; shift ;;
+            --force) OPT_FORCE=1; shift ;;
+            --json) OPT_JSON=1; shift ;;
+            --keep-going) OPT_KEEP_GOING=1; shift ;;
+            -p | --profile) require_arg "$@"; OPT_PROFILE=$2; shift 2 ;;
+            --profile=*) OPT_PROFILE=${1#*=}; shift ;;
+            -c | --config) require_arg "$@"; OPT_CONFIG_FILE=$2; shift 2 ;;
+            --config=*) OPT_CONFIG_FILE=${1#*=}; shift ;;
+            -s | --set) require_arg "$@"; [[ $2 == *=* ]] || die_usage '--set ожидает KEY=VALUE'; SET_OVERRIDES+=("$2"); shift 2 ;;
+            --set=*) [[ $1 == *=*=* ]] || die_usage '--set ожидает KEY=VALUE'; SET_OVERRIDES+=("${1#*=}"); shift ;;
+            --only) require_arg "$@"; local -a l=(); split_list "$2" l; OPT_ONLY+=("${l[@]}"); shift 2 ;;
+            --skip) require_arg "$@"; local -a k=(); split_list "$2" k; OPT_SKIP+=("${k[@]}"); shift 2 ;;
+            -V | --version) CMD_ARGS+=(version); words=1; shift ;;
+            --) shift; CMD_ARGS+=("$@"); break ;;
+            *) CMD_ARGS+=("$1"); words=1; shift ;;
+        esac
+    done
+    ((words)) || CMD_ARGS=(help)
+}
+
+command_file() {
+    local file="$UBB_HOME/commands/$1.sh"
+    [[ $1 =~ ^[a-z][a-z0-9-]*$ && -f $file ]] || return 1
+    printf '%s' "$file"
+}
+
+load_command_meta() {
+    CMD_SUMMARY='' CMD_ROOT=1 CMD_GROUP=other
+    # shellcheck source=/dev/null
+    source "$1"
+}
+
+usage() {
+    local group title file name
+    printf 'ubuntu-bootstrap %s — подготовка Ubuntu-сервера к production\n\n' "$(ubb_version)"
+    printf 'Использование: ubuntu-bootstrap [опции] <команда> [аргументы]\n'
+    for group in setup run inspect maintenance; do
+        case $group in
+            setup) title='Настройка' ;;
+            run) title='Применение' ;;
+            inspect) title='Состояние и диагностика' ;;
+            maintenance) title='Обслуживание' ;;
+        esac
+        printf '\n%s:\n' "$title"
+        for file in "$UBB_HOME"/commands/*.sh; do
+            name=${file##*/}
+            name=${name%.sh}
+            (
+                load_command_meta "$file"
+                [[ $CMD_GROUP == "$group" ]] && printf '  %-12s %s\n' "$name" "$CMD_SUMMARY"
+            ) || true
+        done
+    done
+    cat <<'EOT'
+
+Глобальные опции:
+  -p, --profile NAME     профиль (minimal, web, docker, full или свой)
+  -c, --config FILE      файл конфигурации (по умолчанию /etc/ubuntu-bootstrap/bootstrap.conf)
+  -s, --set KEY=VALUE    переопределить опцию (можно несколько раз)
+      --only M1,M2       только эти модули (и их зависимости)
+      --skip M1,M2       исключить модули
+  -n, --dry-run          показать изменения, ничего не меняя
+  -y, --yes              неинтерактивно: умолчания и согласие на подтверждения
+      --keep-going       при ошибке модуля продолжать со следующего
+      --force            снять предохранители (подтверждение и откат остаются)
+  -q, --quiet            только предупреждения и ошибки
+  -v, --verbose          подробный вывод
+      --json             машиночитаемый вывод (status, audit, modules, version)
+      --no-color         без цвета
+
+Быстрый старт:  sudo ubuntu-bootstrap wizard        интерактивный мастер
+Автоматизация:  sudo ubuntu-bootstrap apply --profile web --set ADMIN_USER=deploy --yes
+Подробнее: ubuntu-bootstrap <команда> --help
+EOT
+}
+
+main() {
+    local file
+    setup_colors
+    parse_global_args "$@"
+    setup_colors
+    ui_init
+
+    case ${CMD_ARGS[0]} in
+        help | -h | --help)
+            if ((${#CMD_ARGS[@]} > 1)) && file="$(command_file "${CMD_ARGS[1]}")"; then
+                load_command_meta "$file"
+                cmd_usage
+            else
+                usage
+            fi
+            return 0
+            ;;
+    esac
+
+    file="$(command_file "${CMD_ARGS[0]}")" || die_usage "неизвестная команда: ${CMD_ARGS[0]} (см. ubuntu-bootstrap help)"
+    UBB_CMD=${CMD_ARGS[0]}
+    CMD_ARGS=("${CMD_ARGS[@]:1}")
+    load_command_meta "$file"
+
+    if [[ ${CMD_ARGS[0]-} == -h || ${CMD_ARGS[0]-} == --help ]]; then
+        cmd_usage
+        return 0
+    fi
+
+    if ((CMD_ROOT)) && ! is_root; then
+        ((DRY_RUN)) || die 'нужны права root: запусти через sudo'
+        log_warn 'dry-run без root: часть проверок состояния недоступна'
+    fi
+    facts_load
+    modules_discover
+    cmd_run "${CMD_ARGS[@]}" || exit $?
+}
+
+main "$@"

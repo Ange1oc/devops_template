@@ -1,0 +1,46 @@
+name: ubuntu-bootstrap release
+
+# Tag ubuntu-bootstrap-vX.Y.Z -> GitHub Release with the tarball, SHA256SUMS and (when the secret is set) a signature.
+# install.sh --ref ubuntu-bootstrap-vX.Y.Z verifies SHA256SUMS; the signature when UBB_SIGNING_KEY_FPR is set.
+on:
+  push:
+    tags: ['ubuntu-bootstrap-v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: check version
+        run: |
+          ver=${GITHUB_REF_NAME#ubuntu-bootstrap-v}
+          [[ $(cat ubuntu/bootstrap/VERSION) == "$ver" ]] || { echo "VERSION ($(cat ubuntu/bootstrap/VERSION)) != tag ($ver)"; exit 1; }
+      - name: lint and unit
+        run: bash ubuntu/bootstrap/tests/run.sh lint && bash ubuntu/bootstrap/tests/unit.sh
+      - name: tarball and checksums
+        run: |
+          ver=${GITHUB_REF_NAME#ubuntu-bootstrap-v}
+          mkdir -p dist/ubuntu-bootstrap
+          cp -R ubuntu/bootstrap/. dist/ubuntu-bootstrap/
+          rm -rf dist/ubuntu-bootstrap/tests/.coverage
+          tar -C dist --owner=0 --group=0 --mtime='UTC 2020-01-01' --sort=name -czf "dist/ubuntu-bootstrap-$ver.tar.gz" ubuntu-bootstrap
+          (cd dist && sha256sum "ubuntu-bootstrap-$ver.tar.gz" > SHA256SUMS)
+      - name: sign SHA256SUMS
+        if: ${{ secrets.UBB_GPG_PRIVATE_KEY != '' }}
+        env:
+          GPG_KEY: ${{ secrets.UBB_GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.UBB_GPG_PASSPHRASE }}
+        run: |
+          printf '%s' "$GPG_KEY" | gpg --batch --import
+          gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" --armor --detach-sign --output dist/SHA256SUMS.asc dist/SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/ubuntu-bootstrap-*.tar.gz
+            dist/SHA256SUMS
+            dist/SHA256SUMS.asc
+          fail_on_unmatched_files: false
+          generate_release_notes: true

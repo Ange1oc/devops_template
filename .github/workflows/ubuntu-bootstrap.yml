@@ -1,0 +1,46 @@
+name: ubuntu-bootstrap
+
+on:
+  push:
+    paths: ['ubuntu/bootstrap/**', '.github/workflows/ubuntu-bootstrap.yml']
+  pull_request:
+    paths: ['ubuntu/bootstrap/**', '.github/workflows/ubuntu-bootstrap.yml']
+  workflow_dispatch:
+
+jobs:
+  lint-unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: docker run --rm -v "$PWD/ubuntu/bootstrap:/src:ro" -w /src koalaman/shellcheck:stable -x -S style ubuntu-bootstrap install.sh lib/*.sh commands/*.sh modules/*.sh completion/*.bash tests/*.sh
+      - name: unit
+        run: bash ubuntu/bootstrap/tests/unit.sh
+
+  e2e:
+    needs: lint-unit
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ubuntu: ['22.04', '24.04', '26.04']
+    steps:
+      - uses: actions/checkout@v4
+      - name: e2e (privileged systemd containers)
+        run: UBUNTU_VERSIONS=${{ matrix.ubuntu }} bash ubuntu/bootstrap/tests/e2e.sh
+        timeout-minutes: 45
+
+  coverage:
+    needs: lint-unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: kcov coverage (Ubuntu 26.04)
+        run: bash ubuntu/bootstrap/tests/run.sh coverage
+        timeout-minutes: 60
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage
+          path: ubuntu/bootstrap/tests/.coverage-summary.txt
+          if-no-files-found: ignore

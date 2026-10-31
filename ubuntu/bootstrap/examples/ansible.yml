@@ -1,0 +1,28 @@
+# Ansible example: install, apply with deferred confirmation, reconnect on the new port, confirm.
+- hosts: new_servers
+  become: true
+  vars:
+    ubb_install: https://raw.githubusercontent.com/Ange1oc/devops_template/main/ubuntu/bootstrap/install.sh
+  tasks:
+    - name: установить ubuntu-bootstrap
+      shell: curl -fsSL {{ ubb_install }} | bash -s -- --ref ubuntu-bootstrap-v1.0.0
+      args: { creates: /opt/ubuntu-bootstrap/ubuntu-bootstrap }
+
+    - name: применить профиль (SSH-порт 2222, подтверждение извне)
+      command: >
+        ubuntu-bootstrap apply --profile minimal
+        --set ADMIN_USER=deploy --set 'ADMIN_SSH_KEYS={{ admin_pubkey }}' --set ADMIN_SUDO_MODE=nopasswd
+        --set SSH_PORT=2222 --set SSH_CONFIRM=wait --set SSH_CONFIRM_TIMEOUT=300 --yes
+      register: apply
+      failed_when: apply.rc not in [0, 4]
+
+    - name: переключиться на новый порт
+      set_fact: { ansible_port: 2222 }
+
+    - name: подтвердить доступ (снимает таймер отката)
+      command: ubuntu-bootstrap confirm
+
+    - name: аудит
+      command: ubuntu-bootstrap audit --json
+      register: audit
+      failed_when: audit.rc == 2

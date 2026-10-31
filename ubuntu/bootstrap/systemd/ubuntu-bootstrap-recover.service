@@ -1,0 +1,14 @@
+[Unit]
+Description=ubuntu-bootstrap: roll back changes that were not confirmed before reboot
+Documentation=https://github.com/Ange1oc/devops_template/tree/main/ubuntu/bootstrap
+# No Before=ssh.socket: the rollback restarts ssh.socket itself, an ordering dependency would create a job cycle.
+After=network.target local-fs.target
+ConditionPathExists=/var/lib/ubuntu-bootstrap/pending.env
+
+[Service]
+Type=oneshot
+TimeoutStartSec=300
+ExecStart=-/opt/ubuntu-bootstrap/ubuntu-bootstrap --quiet rollback --pending --boot
+
+[Install]
+WantedBy=multi-user.target

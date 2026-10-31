@@ -1,0 +1,6 @@
+# Libraries and modules are sourced at runtime: a variable declared in one file is used in another.
+disable=SC2034
+# Associative array keys in literals ([NAME]=...) are mistaken for variables.
+disable=SC2153
+# "A && B || C" is used deliberately: C handles the failure of either A or B.
+disable=SC2015

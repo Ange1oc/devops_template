@@ -8,9 +8,18 @@
 - **📦 [Registry](registry/)** - Приватный Docker Registry  
 - **🔧 [Gitea](gitea/)** - Легковесный Git сервер
 - **💾 [Backup System](backup-system/)** - Универсальная система бекапов
+- **🛡️ [ubuntu-bootstrap](ubuntu/bootstrap/)** - Подготовка Ubuntu-сервера к production одной командой: SSH, UFW, fail2ban, обновления, Docker, nginx, certbot
 - **🔐 [wg-network](ubuntu/wg/README.ru.md)** - WireGuard-сеть hub + peers: установка и подключение серверов одной командой, безопасное применение с автооткатом ([English](ubuntu/wg/README.md))
 
 ## 🚀 Быстрый старт
+
+### 0. Чистый сервер Ubuntu 22.04/24.04/26.04
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Ange1oc/devops_template/main/ubuntu/bootstrap/install.sh | sudo bash -s -- --run
+```
+
+Мастер создаст администратора, закроет вход по паролю, включит UFW и fail2ban, автообновления и при желании поставит Docker/nginx/certbot. Подробности — в [ubuntu/bootstrap/README.md](ubuntu/bootstrap/README.md) ([English](ubuntu/bootstrap/README.en.md)).
 
 ### 1. OneeDev с системой бекапов
 
