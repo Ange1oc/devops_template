@@ -1,0 +1,11 @@
+[Unit]
+Description=wg-network: periodic DNS re-resolution of peer endpoints
+Documentation=https://github.com/Ange1oc/devops_template/tree/main/ubuntu/wg
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,23 @@
+[Unit]
+Description=wg-network: re-resolve DNS endpoints of peers without a recent handshake
+Documentation=https://github.com/Ange1oc/devops_template/tree/main/ubuntu/wg
+ConditionPathExistsGlob=/etc/wireguard/wg-network/*/node.env
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/wg-network --quiet reresolve
+# Needs only netlink for "wg set" and read access to the state.
+CapabilityBoundingSet=CAP_NET_ADMIN
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native

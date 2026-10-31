@@ -1,0 +1,4 @@
+#!/bin/bash
+# firewalld stub: active when the flag file exists.
+[[ $1 == --state && -e /etc/wireguard/.firewalld ]] && { echo running; exit 0; }
+exit 252

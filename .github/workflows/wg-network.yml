@@ -1,0 +1,62 @@
+name: wg-network
+
+on:
+  push:
+    paths: ['ubuntu/wg/**', '.github/workflows/wg-network.yml']
+  pull_request:
+    paths: ['ubuntu/wg/**', '.github/workflows/wg-network.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: ubuntu/wg
+
+jobs:
+  lint-unit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: ShellCheck
+        run: tests/run.sh lint
+      - name: Unit
+        run: tests/run.sh unit
+
+  e2e:
+    # Kernel WireGuard in network namespaces of the runner (a disposable VM).
+    runs-on: ubuntu-24.04
+    needs: lint-unit
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq wireguard-tools
+      - name: E2E (hub/peer, NAT, site-to-site, failures, rollbacks)
+        run: sudo -E tests/run.sh e2e
+
+  systemd:
+    # Real systemd and OpenSSH in containers of several Ubuntu releases.
+    runs-on: ubuntu-24.04
+    needs: lint-unit
+    strategy:
+      fail-fast: false
+      matrix:
+        base: ['ubuntu:22.04', 'ubuntu:24.04']
+    steps:
+      - uses: actions/checkout@v4
+      - name: systemd + OpenSSH (${{ matrix.base }})
+        run: WGN_SYSTEMD_BASES='${{ matrix.base }}' tests/run.sh systemd
+
+  coverage:
+    runs-on: ubuntu-24.04
+    needs: [e2e]
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq wireguard-tools
+      - name: Coverage (unit + e2e + systemd + distro matrix)
+        run: sudo -E env COVERAGE_FULL=1 tests/run.sh coverage --min-statements 88 --min-guards 55
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage
+          path: ubuntu/wg/tests/coverage/last.json

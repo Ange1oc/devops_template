@@ -8,6 +8,7 @@
 - **📦 [Registry](registry/)** - Приватный Docker Registry  
 - **🔧 [Gitea](gitea/)** - Легковесный Git сервер
 - **💾 [Backup System](backup-system/)** - Универсальная система бекапов
+- **🔐 [wg-network](ubuntu/wg/README.ru.md)** - WireGuard-сеть hub + peers: установка и подключение серверов одной командой, безопасное применение с автооткатом ([English](ubuntu/wg/README.md))
 
 ## 🚀 Быстрый старт
 

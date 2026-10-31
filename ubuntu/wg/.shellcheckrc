@@ -1,0 +1,6 @@
+# Modules are sourced at runtime: a variable is often set in one file and used in another.
+disable=SC2034
+# Keys of associative array literals ([NAME]=...) are mistaken for variables.
+disable=SC2153
+# "A && B || C" is intentional: C reacts to a failure of either A or B.
+disable=SC2015

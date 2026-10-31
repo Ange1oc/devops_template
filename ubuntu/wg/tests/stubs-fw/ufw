@@ -1,0 +1,8 @@
+#!/bin/bash
+# UFW stub: status and rules are kept in a file of the node.
+R=/etc/wireguard/.ufw.rules
+case $1 in
+    status) echo 'Status: active'; echo; cat "$R" 2>/dev/null ;;
+    allow) printf '%s ALLOW Anywhere # %s\n' "$2" "${4-}" >> "$R" ;;
+    *) exit 1 ;;
+esac

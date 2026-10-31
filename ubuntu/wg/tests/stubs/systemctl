@@ -1,0 +1,75 @@
+#!/bin/bash
+# Emulates systemctl inside a test netns: wg-quick@IFACE.service -> wg-quick up/down, the
+# ExecStartPre of the wg-network drop-in runs as under systemd, rollback timers are processes.
+S=/etc/wireguard/.systemd
+mkdir -p "$S"
+now=0 quiet=0
+args=()
+for a in "$@"; do
+    case $a in
+        --now) now=1 ;;
+        -q | --quiet) quiet=1 ;;
+        --*) ;;
+        *) args+=("$a") ;;
+    esac
+done
+cmd=${args[0]-}
+unit=${args[1]-}
+iface_of() { local u=${1#wg-quick@}; echo "${u%.service}"; }
+
+prestart() {
+    local iface=$1 f line c
+    f="/etc/systemd/system/wg-quick@$iface.service.d/wg-network.conf"
+    [[ -f $f ]] || return 0
+    while IFS= read -r line; do
+        [[ $line == ExecStartPre=* ]] || continue
+        c=${line#ExecStartPre=}
+        c=${c#-}
+        eval "${c//%i/$iface}" >> "$S/log" 2>&1 || true
+    done < "$f"
+}
+
+start() {
+    local iface
+    iface="$(iface_of "$1")"
+    [[ -e $S/$1.active ]] && ip link show dev "$iface" >/dev/null 2>&1 && return 0
+    prestart "$iface"
+    if wg-quick up "$iface" >> "$S/log" 2>&1; then
+        touch "$S/$1.active"
+    else
+        rm -f "$S/$1.active"
+        return 1
+    fi
+}
+
+stop() {
+    local iface
+    if [[ $1 == *.timer ]]; then
+        [[ -f $S/$1.pid ]] && kill -KILL "$(cat "$S/$1.pid")" 2>/dev/null
+        rm -f "$S/$1.pid"
+        return 0
+    fi
+    iface="$(iface_of "$1")"
+    ip link show dev "$iface" >/dev/null 2>&1 && wg-quick down "$iface" >> "$S/log" 2>&1
+    rm -f "$S/$1.active"
+    return 0
+}
+
+case $cmd in
+    is-active)
+        if [[ -e $S/$unit.active ]] && ip link show dev "$(iface_of "$unit")" >/dev/null 2>&1; then
+            ((quiet)) || echo active
+            exit 0
+        fi
+        ((quiet)) || echo inactive
+        exit 3
+        ;;
+    is-enabled) [[ -e $S/$unit.enabled ]] ;;
+    enable) touch "$S/$unit.enabled"; ((now)) && start "$unit"; exit 0 ;;
+    disable) rm -f "$S/$unit.enabled"; ((now)) && stop "$unit"; exit 0 ;;
+    start) start "$unit" ;;
+    stop) stop "$unit" ;;
+    restart) stop "$unit"; start "$unit" ;;
+    daemon-reload) exit 0 ;;
+    *) echo "systemctl stub: unsupported: $*" >&2; exit 1 ;;
+esac

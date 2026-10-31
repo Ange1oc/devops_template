@@ -1,0 +1,210 @@
+#!/usr/bin/env bash
+#
+# wg-network: safe management of hub-and-spoke WireGuard networks on production servers.
+#
+# Every command is a file commands/<name>.sh ("peer add" -> peer-add.sh) that defines:
+#   CMD_SUMMARY     one-line description for help    CMD_GROUP    help section
+#   CMD_ROOT=0      runs without root                CMD_IFACE=0  needs no interface
+#   CMD_MUTATES=1   changes state (runs in a sandbox under --dry-run)
+#   CMD_READONLY=1  only reads (allowed with --dry-run as is)
+#   CMD_MIGRATE=0   skip migration of legacy state
+#   cmd_usage()     help text                        cmd_run()    implementation
+# Adding a command means adding a file; there is no registry.
+
+set -Eeuo pipefail
+umask 077
+
+# Stable sorting and [a-z] ranges regardless of the administrator's locale.
+if [[ -n ${LC_ALL-} ]]; then
+    export LC_CTYPE=$LC_ALL
+    unset LC_ALL
+fi
+export LC_COLLATE=C LC_NUMERIC=C
+PATH="$PATH:/usr/sbin:/sbin"
+
+WGN_HOME="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+readonly WGN_HOME
+
+for lib in core validate ip config state render system guard apply node migrate runtime; do
+    # shellcheck source=/dev/null
+    source "$WGN_HOME/lib/$lib.sh"
+done
+unset lib
+
+OPT_IFACE='' OPT_YES=0 OPT_DRY_RUN=0 OPT_APPLY=0 OPT_NO_APPLY=0 OPT_FORCE=0 OPT_QUIET=0
+OPT_WAIT_CONFIRM=0 OPT_SHOW_DIFF=0 OPT_COLOR=1 OPT_CONFIRM_TIMEOUT='' OPT_START=0
+CMD_ARGS=()
+
+trap on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+# Report unexpected failures of the main process only: errors in subshells are usually handled.
+trap '[[ $BASHPID == "$$" ]] && log_error "сбой: \"$BASH_COMMAND\" (${BASH_SOURCE[0]##*/}:$LINENO)"' ERR
+
+# Global options are accepted anywhere on the command line.
+parse_global_args() {
+    local words=0
+    while (($#)); do
+        case $1 in
+            -i | --interface) require_arg "$@"; OPT_IFACE=$2; shift 2 ;;
+            --interface=*) OPT_IFACE=${1#*=}; shift ;;
+            -y | --yes) OPT_YES=1; shift ;;
+            -n | --dry-run) OPT_DRY_RUN=1; shift ;;
+            --apply) OPT_APPLY=1; shift ;;
+            --no-apply) OPT_NO_APPLY=1; shift ;;
+            --force) OPT_FORCE=1; shift ;;
+            --wait-confirm) OPT_WAIT_CONFIRM=1; shift ;;
+            --confirm-timeout)
+                require_arg "$@"
+                is_uint "$2" || die_usage '--confirm-timeout: число секунд (0 — без таймера отката)'
+                OPT_CONFIRM_TIMEOUT=$2
+                shift 2
+                ;;
+            --diff) OPT_SHOW_DIFF=1; shift ;;
+            -q | --quiet) OPT_QUIET=1; shift ;;
+            --no-color) OPT_COLOR=0; shift ;;
+            -V | --version) CMD_ARGS+=(version); words=1; shift ;;
+            --) shift; CMD_ARGS+=("$@"); break ;;
+            *) CMD_ARGS+=("$1"); words=1; shift ;;
+        esac
+    done
+    ((words)) || CMD_ARGS=(help)
+}
+
+command_file() {
+    local file="$WGN_HOME/commands/$1.sh"
+    [[ $1 =~ ^[a-z][a-z0-9-]*$ && -f $file ]] || return 1
+    printf '%s' "$file"
+}
+
+declare -A ALIASES=([diff]=plan [ls]=peer-list [list]=peer-list [peers]=peer-list [token]=invite)
+
+resolve_command() {
+    local first=${CMD_ARGS[0]} second=${CMD_ARGS[1]-}
+    if [[ -n $second ]] && command_file "$first-$second" >/dev/null; then
+        CMD_NAME="$first-$second"
+        CMD_ARGS=("${CMD_ARGS[@]:2}")
+        return 0
+    fi
+    first=${ALIASES[$first]:-$first}
+    command_file "$first" >/dev/null || return 1
+    CMD_NAME=$first
+    CMD_ARGS=("${CMD_ARGS[@]:1}")
+}
+
+# "peer-add" is shown as "peer add" when several commands share the prefix.
+display_name() {
+    local prefix=${1%%-*}
+    local -a group=()
+    [[ $1 == *-* ]] && mapfile -t group < <(compgen -G "$WGN_HOME/commands/$prefix-*.sh")
+    if ((${#group[@]} > 1)); then
+        printf '%s' "${1/-/ }"
+    else
+        printf '%s' "$1"
+    fi
+}
+
+load_command_meta() {
+    CMD_SUMMARY='' CMD_GROUP=other CMD_ROOT=1 CMD_IFACE=1 CMD_MUTATES=0 CMD_READONLY=0 CMD_MIGRATE=1
+    # shellcheck source=/dev/null
+    source "$1"
+}
+
+usage() {
+    local group title file name
+    printf 'wg-network %s — безопасное управление WireGuard-сетями (hub + peers)\n\n' "$(wgn_version)"
+    printf 'Использование: wg-network [-i IFACE] <команда> [опции]\n'
+    for group in setup peers apply diag maintenance; do
+        case $group in
+            setup) title='Настройка узла' ;;
+            peers) title='Peer (на hub)' ;;
+            apply) title='Применение и откат' ;;
+            diag) title='Состояние и диагностика' ;;
+            maintenance) title='Обслуживание' ;;
+        esac
+        printf '\n%s:\n' "$title"
+        for file in "$WGN_HOME"/commands/*.sh; do
+            name=${file##*/}
+            name=${name%.sh}
+            (
+                load_command_meta "$file"
+                [[ $CMD_GROUP == "$group" ]] && printf '  %-15s %s\n' "$(display_name "$name")" "$CMD_SUMMARY"
+            ) || true
+        done
+    done
+    cat <<'EOF'
+
+Глобальные опции:
+  -i, --interface IFACE   интерфейс (по умолчанию единственный управляемый или wg0)
+  -n, --dry-run           показать план, ничего не меняя
+      --apply             применить без вопроса (предохранители продолжают работать)
+      --no-apply          только подготовить изменения (применить позже: wg-network apply)
+  -y, --yes               ответить «да» на все вопросы (для автоматизации)
+      --force             снять блокировку предохранителя (подтверждение и откат остаются)
+      --confirm-timeout N секунд до автоматического отката (0 — без таймера)
+      --wait-confirm      не подтверждать автоматически: ждать wg-network confirm
+      --diff              показать diff конфига
+  -q, --quiet             только ошибки и предупреждения
+
+Подключение сервера:  hub: wg-network invite NAME   →   новый сервер: выполнить напечатанное
+Подробнее: wg-network <команда> --help
+EOF
+}
+
+dryrun_sandbox() {
+    local sandbox
+    make_tmp_dir sandbox
+    if [[ -d $ST_DIR ]]; then
+        cp -a "$ST_DIR/." "$sandbox/"
+    fi
+    st_paths "$sandbox"
+    log_info "dry-run: изменения выполняются в копии состояния, система не меняется"
+}
+
+main() {
+    local file
+    parse_global_args "$@"
+    setup_colors
+    config_load
+
+    case ${CMD_ARGS[0]} in
+        help | -h | --help)
+            if ((${#CMD_ARGS[@]} > 1)) && CMD_ARGS=("${CMD_ARGS[@]:1}") && resolve_command; then
+                load_command_meta "$(command_file "$CMD_NAME")"
+                cmd_usage
+            else
+                usage
+            fi
+            return 0
+            ;;
+    esac
+
+    resolve_command || die_usage "неизвестная команда: ${CMD_ARGS[*]:0:2} (см. wg-network help)"
+    file="$(command_file "$CMD_NAME")"
+    load_command_meta "$file"
+    WGN_CMD="$(display_name "$CMD_NAME")"
+
+    if [[ ${CMD_ARGS[0]-} == -h || ${CMD_ARGS[0]-} == --help ]]; then
+        cmd_usage
+        return 0
+    fi
+
+    if ((CMD_ROOT)); then
+        require_root
+        # The boot-time check (ExecStartPre) must do nothing beyond the rollback itself.
+        if ((CMD_MIGRATE)) && [[ " ${CMD_ARGS[*]} " != *' --boot '* ]]; then
+            migrate_legacy
+        fi
+    fi
+    # A command that can neither run in the sandbox nor is read-only must not silently ignore -n.
+    if ((OPT_DRY_RUN && !CMD_MUTATES && !CMD_READONLY)); then
+        die_usage "команда '$WGN_CMD' не поддерживает --dry-run"
+    fi
+    ((CMD_IFACE)) && iface_resolve
+    ((OPT_DRY_RUN && CMD_MUTATES)) && dryrun_sandbox
+
+    cmd_run "${CMD_ARGS[@]}"
+}
+
+main "$@"

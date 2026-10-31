@@ -1,0 +1,18 @@
+#!/bin/bash
+# Emulates a transient timer: runs the command later in its own session.
+S=/etc/wireguard/.systemd
+mkdir -p "$S"
+unit='' secs=''
+while (($#)); do
+    case $1 in
+        --unit) unit=$2; shift 2 ;;
+        --unit=*) unit=${1#*=}; shift ;;
+        --on-active=*) secs=${1#*=}; secs=${secs%s}; shift ;;
+        --description) shift 2 ;;
+        --*) shift ;;
+        *) break ;;
+    esac
+done
+# shellcheck disable=SC2016  # expanded by the inner bash
+setsid bash -c 'sleep "$1"; shift; exec "$@"' _ "$secs" "$@" </dev/null >> "$S/timer.log" 2>&1 &
+echo $! > "$S/$unit.timer.pid"
